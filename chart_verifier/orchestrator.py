@@ -85,12 +85,13 @@ async def run_pipeline(narrative: str, image_path: str) -> str:
     print("⚡ Running pipeline...\n")
 
     async def _run():
+        last_text = ""
         async for event in runner.run_async(
             user_id=USER_ID, session_id=session_id, new_message=content
         ):
             if event.is_final_response() and event.content and event.content.parts:
-                return event.content.parts[0].text
-        return ""
+                last_text = event.content.parts[0].text
+        return last_text
 
     feedback_text = await asyncio.wait_for(_run(), timeout=AGENT_TIMEOUT)
 
