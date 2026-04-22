@@ -23,7 +23,7 @@ st.set_page_config(
 
 st.title("📊 Chart Fact-Checker")
 st.caption(
-    "Upload a chart image and enter a student narrative — the 7-agent pipeline "
+    "Upload a chart image and enter a student narrative — the 4-agent pipeline "
     "will fact-check every claim and return structured feedback."
 )
 
@@ -46,21 +46,18 @@ run_btn = st.button("Run fact-check", type="primary", disabled=not (uploaded_fil
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 if run_btn:
-    # Save uploaded image to a temp file so orchestrator can read it
     suffix = os.path.splitext(uploaded_file.name)[1] or ".png"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded_file.getvalue())
         tmp_path = tmp.name
 
     try:
-        # Show chart preview
         st.image(uploaded_file, caption="Uploaded chart", use_container_width=True)
 
-        with st.status("Running 5-agent pipeline…", expanded=True) as status:
-            st.write("🔍 Decomposing & classifying claims…")
-            st.write("🖼️ Gathering visual & structured evidence (parallel)…")
-            st.write("⚖️ Verifying & judging…")
-            st.write("💬 Generating feedback…")
+        with st.status("Running 4-agent pipeline…", expanded=True) as status:
+            st.write("📋 Agent 1 — Decomposing narrative into atomic claims & classifying relevance…")
+            st.write("🔍 Agents 2 & 3 — Gathering visual evidence and structured data in parallel…")
+            st.write("⚖️ Agent 4 — Resolving verdicts and generating student feedback…")
 
             from chart_verifier.orchestrator import run_pipeline
 

@@ -6,33 +6,80 @@ Fact-checks student chart narratives against chart images using Google ADK + Ope
 
 ```
 chart_verifier/
-├── agent.py              # ADK root agent (entry point for adk web / adk run)
-├── orchestrator.py       # Full programmatic pipeline with step-by-step logging
+├── agent.py              # ADK root agent (ConditionalPipelineAgent — entry for adk web / adk run)
+├── orchestrator.py       # Programmatic CLI runner with step-by-step logging
+├── config.py             # Model config (OpenRouter via LiteLlm)
 ├── requirements.txt
-├── .env.example          # Copy to .env and fill in your key
+├── .env                  # OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_VISION_MODEL
 │
 ├── agents/
-│   ├── claim_decomposer.py       # Agent 1: atomic claim extraction (LLM)
-│   ├── claim_typing.py           # Agent 2: claim classification (LLM)
-│   ├── visual_evidence.py        # Agent 3: chart image reading (vision LLM)
-│   ├── structured_evidence.py    # Agent 4: table extraction + reasoning (vision LLM)
-│   ├── verification_question.py  # Agent 5: targeted re-check (LLM, conditional)
-│   ├── judge.py                  # Agent 6: arbitration (LLM)
-│   └── feedback.py               # Agent 7: student feedback (LLM)
+│   ├── general_chat.py         # General conversation handler (non-factcheck path)
+│   ├── claim_analyzer.py       # Agent 1: atomic claim extraction + relevance classification (vision LLM)
+│   ├── visual_evidence.py      # Agent 2: chart image reading → verdict + confidence (vision LLM)
+│   ├── structured_evidence.py  # Agent 3: pseudo-table extraction → verdict + confidence (vision LLM)
+│   └── verdict_feedback.py     # Agent 4: verdict resolution + student feedback (LLM)
 │
 └── tools/
-    └── text_tools.py     # Deterministic tools (no LLM): sentence split,
-                          # confidence threshold gate, verdict aggregation
+    ├── text_tools.py     # Deterministic tools: split_sentences, check_confidence_threshold,
+    │                     # format_verdict_summary
+    └── code_executor.py  # Sandboxed Python subprocess runner
 ```
 
-## What uses LLM vs. deterministic tools
+## Pipeline Flow
+
+```
+narrative + chart image
+        │
+        ▼
+[Router] image + text present?
+        │
+        ├─ No  → general_chat (conversational response)
+        │
+        └─ Yes ─────────────────────────────────────────────────
+                │
+                ▼
+        [Agent 1] Claim Analyzer
+          • splits narrative into atomic claims
+          • classifies each claim as related/unrelated to the chart
+          • unrelated claims are short-circuited (verdict = unrelated)
+                │
+                ├─ all claims unrelated? → skip evidence gathering
+                │
+                ▼
+        [Agent 2] Visual Evidence  ──┐  (parallel)
+        [Agent 3] Structured Evidence┘
+          • Agent 2: reads chart image visually → verdict + confidence
+          • Agent 3: extracts pseudo-table → reasons over data → verdict + confidence
+                │
+                ▼
+        [Agent 4] Verdict Feedback
+          • resolves verdicts from Agents 2 & 3
+          • merges unrelated claims
+          • writes student-facing feedback
+```
+
+## Verdict Resolution (Agent 4)
+
+| Condition | Resolution |
+|---|---|
+| Both agents agree **and** avg confidence ≥ 0.70 | Use shared verdict directly |
+| Agents disagree **or** avg confidence < 0.70 — numerical claim | Defer to Agent 3 (Structured Evidence) |
+| Agents disagree **or** avg confidence < 0.70 — visual claim | Defer to Agent 2 (Visual Evidence) |
+| Claim was short-circuited | verdict = unrelated |
+
+## LLM vs. Deterministic
 
 | Component | Type | Reason |
 |---|---|---|
 | `split_sentences` | Tool (regex) | No reasoning needed |
 | `check_confidence_threshold` | Tool (comparison) | Pure float comparison |
 | `format_verdict_summary` | Tool (counter) | Pure aggregation |
-| Agents 1–7 | LLM | Require semantic understanding or vision |
+| `execute_verification_code` | Tool (subprocess) | Sandboxed execution |
+| Agent 1 (Claim Analyzer) | Vision LLM | Reads chart image + semantic decomposition |
+| Agent 2 (Visual Evidence) | Vision LLM | Reads chart image directly |
+| Agent 3 (Structured Evidence) | Vision LLM | Reads chart image to extract table |
+| Agent 4 (Verdict Feedback) | LLM | Semantic reasoning over text evidence |
+| General Chat | LLM | Conversational response |
 
 ## Setup
 
@@ -47,13 +94,16 @@ cp .env.example .env
 # 3a. Run via ADK web UI
 adk web  # from parent directory of chart_verifier/
 
-# 3b. Run programmatically
+# 3b. Run via Streamlit UI
+streamlit run streamlit_app.py  # from project root
+
+# 3c. Run programmatically
 python -m chart_verifier.orchestrator "Your narrative here." path/to/chart.png
 ```
 
-## Choosing a model
+## Choosing a Model
 
-Edit `.env` to swap models anytime:
+Edit `.env` to swap models. `OPENROUTER_VISION_MODEL` is used by Agents 1, 2, and 3.
 
 ```env
 # Fast + cheap
@@ -61,38 +111,10 @@ OPENROUTER_MODEL=openrouter/google/gemini-2.0-flash-exp:free
 OPENROUTER_VISION_MODEL=openrouter/google/gemini-2.0-flash-exp:free
 
 # High quality
-OPENROUTER_MODEL=openrouter/anthropic/claude-3.5-sonnet
-OPENROUTER_VISION_MODEL=openrouter/anthropic/claude-3.5-sonnet
+OPENROUTER_MODEL=openrouter/anthropic/claude-3.7-sonnet
+OPENROUTER_VISION_MODEL=openrouter/anthropic/claude-3.7-sonnet
 
 # Cost-effective with vision
 OPENROUTER_MODEL=openrouter/openai/gpt-4o-mini
 OPENROUTER_VISION_MODEL=openrouter/openai/gpt-4o-mini
 ```
-
-## Pipeline Flow
-
-```
-narrative + chart image
-        │
-        ▼
-[Agent 1] Claim Decomposer → atomic claims
-        │
-        ▼ (per claim)
-[Agent 2] Claim Typing → claim type
-        │
-        ├─ unrelated / unsupported → short-circuit verdict
-        │
-        ▼
-[Agent 3] Visual Evidence  ──┐
-[Agent 4] Structured Evidence─┤→ [Agent 5 if low confidence] → [Agent 6] Judge
-                              │
-                              ▼
-                       [Agent 7] Feedback → student output
-```
-
-## Confidence & Re-check Logic
-
-- Agents 3 & 4 each return a confidence score (0–1).
-- If average confidence < 0.70, Agent 5 (Verification Question) is triggered.
-- Agent 5 generates a targeted question and answers it from the available evidence.
-- Agent 6 (Judge) receives all results and makes the final call.
