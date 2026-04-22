@@ -67,11 +67,49 @@ def _extract_json_array(text: str) -> list | None:
     return None
 
 
+def _extract_json_object(text: str) -> dict | None:
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    for i, ch in enumerate(text[start:], start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    data = _json.loads(text[start:i + 1])
+                    return data if isinstance(data, dict) else None
+                except Exception:
+                    return None
+    return None
+
+
 def _resolve_claim_verdicts(captured: dict[str, str]) -> list[dict]:
     """
-    Parse intermediate agent events and return [{claim, verdict}] where
+    Parse agent outputs and return [{claim, verdict, note}] where
     verdict ∈ {supported, contradicted, unrelated}.
+    Prefers the structured JSON output from verdict_feedback if available.
     """
+    # Try new JSON format from verdict_feedback first
+    vf_text = captured.get("verdict_feedback", "")
+    if vf_text:
+        data = _extract_json_object(vf_text)
+        if data and "claims" in data:
+            valid = {"supported", "contradicted", "unrelated"}
+            results = []
+            for item in data.get("claims", []):
+                if isinstance(item, dict) and item.get("claim") and item.get("verdict", "").lower() in valid:
+                    results.append({
+                        "claim": item["claim"],
+                        "verdict": item["verdict"].lower(),
+                        "note": item.get("feedback", ""),
+                    })
+            if results:
+                return results
+
+    # Fall back to evidence-based resolution
     result: list[dict] = []
 
     # Unrelated claims — already resolved
@@ -196,8 +234,12 @@ async def run_pipeline(narrative: str, image_path: str) -> tuple[str, list[dict]
                 last_text = event.content.parts[0].text
         return last_text, captured
 
-    feedback_text, captured = await asyncio.wait_for(_run(), timeout=AGENT_TIMEOUT)
+    last_text, captured = await asyncio.wait_for(_run(), timeout=AGENT_TIMEOUT)
     claim_verdicts = _resolve_claim_verdicts(captured)
+
+    # Extract summary from structured output if available
+    vf_data = _extract_json_object(captured.get("verdict_feedback", ""))
+    feedback_text = (vf_data or {}).get("summary", "") or last_text
 
     print("\n" + "=" * 60)
     print("STUDENT FEEDBACK")

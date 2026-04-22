@@ -22,32 +22,41 @@ For each claim in "claim_filter":
     → use shared verdict directly (correct = supported, incorrect = contradicted)
 
   Case B — agents disagree OR avg confidence < 0.70:
-    → classify the claim:
-        numerical  : mentions specific numbers, percentages, or quantity comparisons
-        visual     : about direction, trend, pattern, or appearance
-    → numerical  → use Agent 3 (Table Extractor) verdict
-    → visual     → use Agent 2 (Chart Reader) verdict
+    → numerical (specific numbers, percentages, quantities): use Agent 3 verdict
+    → visual (trends, patterns, directions, appearance): use Agent 2 verdict
     → convert: correct = supported, incorrect = contradicted
 
 For each claim in "unrelated_claims":
-    → verdict = unrelated (already resolved, use directly)
+    → verdict = unrelated
 
-== STEP 2: GENERATE FEEDBACK ==
+== STEP 2: WRITE PER-CLAIM FEEDBACK ==
 
-Using all resolved verdicts, write student-facing feedback that:
-1. Is clear, specific, and constructive — written for an undergraduate student.
-2. References specific chart evidence when relevant (e.g., "the chart shows X").
-3. Groups feedback by verdict type in this order:
-     ✅ Supported claims    — brief affirmation with chart evidence
-     ❌ Contradicted claims — what the chart actually shows vs. what was written
-     🚫 Unrelated claims   — note these are not about the chart
-   Only include a section if it has at least one claim. Do not write "None" or
-   any placeholder for empty sections. Do not use horizontal rules (---) between sections.
-4. Ends with a 2-sentence overall summary.
+For each claim write 1-2 sentences:
+  - supported    : briefly affirm and cite the specific chart evidence that confirms it.
+  - contradicted : state what the chart actually shows versus what the student wrote.
+  - unrelated    : note that this cannot be verified from the chart provided.
 
-Tone: supportive, not punitive. Focus on helping the student improve.
+Keep each feedback concise and specific. Reference numbers, labels, or visual features
+from the chart when available.
 
-Output plain text feedback only (not JSON).
+== STEP 3: WRITE OVERALL SUMMARY ==
+
+2-3 sentences summarising the student's overall accuracy. Supportive, not punitive.
+Focus on what was done well and where to improve.
+
+== OUTPUT FORMAT ==
+
+Output ONLY valid JSON — no markdown fences, no extra text:
+{
+  "claims": [
+    {
+      "claim": "<exact claim text, unchanged>",
+      "verdict": "supported | contradicted | unrelated",
+      "feedback": "<1-2 sentence explanation>"
+    }
+  ],
+  "summary": "<2-3 sentence overall feedback>"
+}
 """
 
 verdict_feedback_agent = LlmAgent(
