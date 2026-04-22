@@ -8,7 +8,6 @@ Run with:
 import asyncio
 import tempfile
 import os
-import sys
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -57,17 +56,11 @@ if run_btn:
         # Show chart preview
         st.image(uploaded_file, caption="Uploaded chart", use_container_width=True)
 
-        with st.status("Running 7-agent pipeline…", expanded=True) as status:
-            st.write("🔍 Decomposing claims…")
-            st.write("📐 Typing claims…")
+        with st.status("Running 5-agent pipeline…", expanded=True) as status:
+            st.write("🔍 Decomposing & classifying claims…")
             st.write("🖼️ Gathering visual & structured evidence (parallel)…")
             st.write("⚖️ Verifying & judging…")
             st.write("💬 Generating feedback…")
-
-            # Add project root to path so chart_verifier package is importable
-            project_root = os.path.dirname(os.path.abspath(__file__))
-            if project_root not in sys.path:
-                sys.path.insert(0, project_root)
 
             from chart_verifier.orchestrator import run_pipeline
 

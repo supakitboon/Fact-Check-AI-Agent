@@ -9,37 +9,41 @@ than re-running the full claim because it constrains the LLM to answer
 something precise and answerable.
 """
 
-import os
 from google.adk.agents import LlmAgent
-from google.adk.models.lite_llm import LiteLlm
 
-MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/anthropic/claude-3.5-sonnet")
+from chart_verifier.config import make_llm
 
 INSTRUCTION = """
-You are a Verification Question Agent. In the conversation history you will find:
-1. A JSON array of typed claims from the Claim Typing Agent.
-2. Visual evidence results from the Visual Evidence Agent (a JSON array).
-3. Structured evidence results from the Structured Evidence Agent (a JSON array).
+You are a Verdict Resolver. In the conversation history you will find:
+1. A filtered JSON array from the Claim Filter (related claims only — no unrelated claims).
+2. Visual verdicts from the Chart Reader Agent (correct | incorrect + confidence).
+3. Structured verdicts from the Table Extractor Agent (correct | incorrect + confidence).
 
-For each claim (match by "claim" text across all arrays):
-  - If "short_circuit" is true                        → set needed=false.
-  - If avg(visual_confidence, structured_confidence) >= 0.70  → set needed=false.
-  - Otherwise (low confidence or conflicting evidence) → set needed=true and run:
-      Step 1: Generate ONE specific, narrow question answerable from a chart.
-              Examples:
-                "What is the exact value of Product A in 2022?"
-                "Did Revenue increase or decrease from 2020 to 2022?"
-      Step 2: Using the provided evidence summaries, answer your own question.
+For each claim from the Claim Filter, produce ONE resolved_verdict:
 
-Output ONLY a JSON array (one object per claim, same order as typed claims):
+  Case A — both agents give the same verdict AND avg confidence >= 0.70:
+    → correct   = resolved_verdict "supported"
+    → incorrect = resolved_verdict "contradicted"
+    Set needed=false.
+
+  Case B — agents disagree OR avg confidence < 0.70:
+    Set needed=true and resolve by:
+      Step 1: Generate ONE specific, narrow question answerable from the chart.
+              e.g. "Did revenue increase every year from 2020 to 2023?"
+      Step 2: Answer your own question using the extracted table and visual evidence.
+      Step 3: Assign resolved_verdict:
+                supported    — the claim holds up against the chart
+                contradicted — the claim does not hold up against the chart
+
+Output ONLY a JSON array (one object per claim, same order as Claim Filter output):
 [
   {
     "claim": "<claim text>",
     "needed": <true | false>,
-    "verification_question": "<question or null>",
-    "answer_from_evidence": "<answer or null>",
-    "resolved_verdict": "<supported | contradicted | partially_supported | insufficient_evidence | unrelated | null>",
-    "confidence": <float 0.0-1.0 | null>
+    "verification_question": "<question or null if needed=false>",
+    "answer_from_evidence": "<answer or null if needed=false>",
+    "resolved_verdict": "<supported | contradicted — never null>",
+    "confidence": <float 0.0-1.0>
   }
 ]
 
@@ -48,11 +52,7 @@ Do not add preamble. Return only the JSON array.
 
 verification_question_agent = LlmAgent(
     name="verification_question",
-    model=LiteLlm(
-        model=MODEL,
-        api_key=os.getenv("OPENROUTER_API_KEY"),
-        api_base="https://openrouter.ai/api/v1",
-    ),
+    model=make_llm(),
     description=(
         "Conditionally generates targeted verification questions for low-confidence "
         "claims (avg confidence < 0.70); skips high-confidence and short-circuit claims."

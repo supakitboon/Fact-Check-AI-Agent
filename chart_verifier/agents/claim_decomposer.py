@@ -8,13 +8,10 @@ a student sentence like "Revenue grew and Product A led sales" contains
 two distinct claims that rule-based splitting would miss.
 """
 
-import os
 from google.adk.agents import LlmAgent
-from google.adk.models.lite_llm import LiteLlm
 
+from chart_verifier.config import make_llm
 from chart_verifier.tools.text_tools import split_sentences
-
-MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/anthropic/claude-3.5-sonnet")
 
 INSTRUCTION = """
 You are a Claim Decomposer. Your job is to break a student's chart narrative
@@ -35,11 +32,7 @@ Steps you MUST follow:
 
 claim_decomposer_agent = LlmAgent(
     name="claim_decomposer",
-    model=LiteLlm(
-        model=MODEL,
-        api_key=os.getenv("OPENROUTER_API_KEY"),
-        api_base="https://openrouter.ai/api/v1",
-    ),
+    model=make_llm(),
     description="Breaks a student chart narrative into atomic, independently verifiable claims.",
     instruction=INSTRUCTION,
     tools=[split_sentences],  # Used as a pre-processing helper

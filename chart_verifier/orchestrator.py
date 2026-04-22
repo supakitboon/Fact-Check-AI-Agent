@@ -25,6 +25,28 @@ USER_ID = "student_user"
 AGENT_TIMEOUT = 300  # seconds — full pipeline can take a while
 
 
+_SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+_MIME_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+_MAX_NARRATIVE_CHARS = 10_000
+
+
+def _validate_inputs(narrative: str, image_path: str) -> None:
+    if not narrative or not narrative.strip():
+        raise ValueError("Narrative must not be empty.")
+    if len(narrative) > _MAX_NARRATIVE_CHARS:
+        raise ValueError(f"Narrative exceeds {_MAX_NARRATIVE_CHARS} character limit.")
+    if not os.path.isfile(image_path):
+        raise FileNotFoundError(f"Image file not found: {image_path}")
+    ext = os.path.splitext(image_path)[1].lower()
+    if ext not in _SUPPORTED_EXTENSIONS:
+        raise ValueError(f"Unsupported image format '{ext}'. Use: {', '.join(_SUPPORTED_EXTENSIONS)}")
+
+
 async def run_pipeline(narrative: str, image_path: str) -> str:
     """
     Run the full chart fact-checking pipeline.
@@ -36,6 +58,8 @@ async def run_pipeline(narrative: str, image_path: str) -> str:
     Returns:
         Student-facing feedback string (from Agent 7 — Feedback).
     """
+    _validate_inputs(narrative, image_path)
+
     # Import here to avoid circular imports (agent.py no longer imports orchestrator)
     from chart_verifier.agent import root_agent
 
@@ -49,12 +73,7 @@ async def run_pipeline(narrative: str, image_path: str) -> str:
 
     # Detect MIME type from extension
     ext = os.path.splitext(image_path)[1].lower()
-    mime_type = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".webp": "image/webp",
-    }.get(ext, "image/png")
+    mime_type = _MIME_TYPES[ext]
 
     # Build session and runner around the SequentialAgent pipeline
     session_id = "pipeline_session"

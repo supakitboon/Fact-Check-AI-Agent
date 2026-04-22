@@ -8,38 +8,35 @@ interpretability and verifiability compared to direct visual QA alone.
 This agent first extracts a pseudo-table from the chart, then reasons over it.
 """
 
-import os
 from google.adk.agents import LlmAgent
-from google.adk.models.lite_llm import LiteLlm
 
-VISION_MODEL = os.getenv("OPENROUTER_VISION_MODEL", "openrouter/anthropic/claude-3.5-sonnet")
+from chart_verifier.config import make_llm
 
 INSTRUCTION = """
 You are a Structured Evidence Agent. In the conversation history you will find:
 1. The chart image in the user's original message.
-2. A JSON array of typed claims from the Claim Typing Agent (the most recent JSON array).
+2. A JSON array of claims from the Claim Filter (the most recent JSON array).
 
-For each claim:
-  - If "short_circuit" is true  → output a skipped entry (no chart reading needed).
-  - If "short_circuit" is false → perform the two steps below.
+For each claim, perform the steps below:
 
 Step 1 — Extract a data table:
   Read the chart and extract its data into a structured pseudo-table
   (e.g., rows of "Category | Year | Value"). Estimate from the chart scale if exact
   values are not readable.
 
-Step 2 — Reason over the table:
-  Using ONLY the extracted table (not visual intuition), evaluate the claim.
+Step 2 — Evaluate the claim against the table:
+  Decide:
+    correct   — the extracted data confirms the claim
+    incorrect — the extracted data contradicts the claim
 
 Output ONLY a JSON array (one object per claim, same order as input):
 [
   {
     "claim": "<claim text>",
-    "skipped": <true | false>,
-    "extracted_table": "<markdown table — null if skipped>",
-    "candidate_answer": "<supported | contradicted | partially_supported | insufficient_evidence | unrelated | null>",
-    "confidence": <float 0.0-1.0 | null>,
-    "reasoning": "<1-2 sentences showing how the table supports the verdict — null if skipped>"
+    "extracted_table": "<markdown table>",
+    "verdict": "<correct | incorrect>",
+    "confidence": <float 0.0-1.0>,
+    "reasoning": "<1-2 sentences>"
   }
 ]
 
@@ -48,11 +45,7 @@ Do not add preamble. Return only the JSON array.
 
 structured_evidence_agent = LlmAgent(
     name="structured_evidence",
-    model=LiteLlm(
-        model=VISION_MODEL,
-        api_key=os.getenv("OPENROUTER_API_KEY"),
-        api_base="https://openrouter.ai/api/v1",
-    ),
+    model=make_llm(vision=True),
     description=(
         "Extracts a structured data table from the chart image and reasons over it "
         "to evaluate all non-short-circuit claims."
