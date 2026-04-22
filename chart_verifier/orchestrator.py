@@ -9,6 +9,7 @@ Usage:
 """
 
 import asyncio
+import json as _json
 import os
 from dotenv import load_dotenv
 
@@ -47,7 +48,83 @@ def _validate_inputs(narrative: str, image_path: str) -> None:
         raise ValueError(f"Unsupported image format '{ext}'. Use: {', '.join(_SUPPORTED_EXTENSIONS)}")
 
 
-async def run_pipeline(narrative: str, image_path: str) -> str:
+def _extract_json_array(text: str) -> list | None:
+    start = text.find("[")
+    if start == -1:
+        return None
+    depth = 0
+    for i, ch in enumerate(text[start:], start):
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                try:
+                    data = _json.loads(text[start : i + 1])
+                    return data if isinstance(data, list) else None
+                except Exception:
+                    return None
+    return None
+
+
+def _resolve_claim_verdicts(captured: dict[str, str]) -> list[dict]:
+    """
+    Parse intermediate agent events and return [{claim, verdict}] where
+    verdict ∈ {supported, contradicted, unrelated}.
+    """
+    result: list[dict] = []
+
+    # Unrelated claims — already resolved
+    arr = _extract_json_array(captured.get("unrelated_claims", ""))
+    if arr:
+        for item in arr:
+            if isinstance(item, dict) and item.get("claim"):
+                result.append({"claim": item["claim"], "verdict": "unrelated"})
+
+    def _parse_evidence(text: str) -> dict[str, dict]:
+        by_claim: dict[str, dict] = {}
+        arr = _extract_json_array(text or "")
+        if not arr:
+            return by_claim
+        for item in arr:
+            if isinstance(item, dict) and item.get("claim"):
+                by_claim[item["claim"]] = item
+        return by_claim
+
+    def _map(v: str) -> str:
+        v = (v or "").lower().strip()
+        if v == "correct":   return "supported"
+        if v == "incorrect": return "contradicted"
+        return "unknown"
+
+    vis_by_claim  = _parse_evidence(captured.get("visual_evidence", ""))
+    strc_by_claim = _parse_evidence(captured.get("structured_evidence", ""))
+
+    for claim in set(list(vis_by_claim) + list(strc_by_claim)):
+        vis  = vis_by_claim.get(claim)
+        strc = strc_by_claim.get(claim)
+
+        vis_v    = _map(vis.get("verdict")  if vis  else "")
+        strc_v   = _map(strc.get("verdict") if strc else "")
+        vis_conf = float(vis.get("confidence")  or 0.0) if vis  else 0.0
+        strc_conf= float(strc.get("confidence") or 0.0) if strc else 0.0
+        avg_conf = (vis_conf + strc_conf) / 2.0
+
+        if vis_v == strc_v and vis_v != "unknown" and avg_conf >= 0.70:
+            final = vis_v
+        elif strc_v != "unknown" and strc_conf >= vis_conf:
+            final = strc_v
+        elif vis_v != "unknown":
+            final = vis_v
+        else:
+            final = "unknown"
+
+        result.append({"claim": claim, "verdict": final})
+
+    return result
+
+
+async def run_pipeline(narrative: str, image_path: str) -> tuple[str, list[dict]]:
     """
     Run the full chart fact-checking pipeline.
 
@@ -56,7 +133,8 @@ async def run_pipeline(narrative: str, image_path: str) -> str:
         image_path: Path to the chart image file (PNG/JPG).
 
     Returns:
-        Student-facing feedback string (from Agent 7 — Feedback).
+        (feedback_text, claim_verdicts) where claim_verdicts is a list of
+        {claim, verdict} dicts with verdict ∈ {supported, contradicted, unrelated}.
     """
     _validate_inputs(narrative, image_path)
 
@@ -105,14 +183,21 @@ async def run_pipeline(narrative: str, image_path: str) -> str:
 
     async def _run():
         last_text = ""
+        captured: dict[str, str] = {}
         async for event in runner.run_async(
             user_id=USER_ID, session_id=session_id, new_message=content
         ):
+            if event.author and event.content and event.content.parts:
+                for part in event.content.parts:
+                    text = getattr(part, "text", None)
+                    if text and text.strip():
+                        captured[event.author] = text
             if event.is_final_response() and event.content and event.content.parts:
                 last_text = event.content.parts[0].text
-        return last_text
+        return last_text, captured
 
-    feedback_text = await asyncio.wait_for(_run(), timeout=AGENT_TIMEOUT)
+    feedback_text, captured = await asyncio.wait_for(_run(), timeout=AGENT_TIMEOUT)
+    claim_verdicts = _resolve_claim_verdicts(captured)
 
     print("\n" + "=" * 60)
     print("STUDENT FEEDBACK")
@@ -120,7 +205,7 @@ async def run_pipeline(narrative: str, image_path: str) -> str:
     print(feedback_text)
     print("=" * 60)
 
-    return feedback_text
+    return feedback_text, claim_verdicts
 
 
 if __name__ == "__main__":

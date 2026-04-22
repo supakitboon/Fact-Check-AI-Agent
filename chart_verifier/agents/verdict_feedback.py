@@ -41,10 +41,11 @@ Using all resolved verdicts, write student-facing feedback that:
      ✅ Supported claims    — brief affirmation with chart evidence
      ❌ Contradicted claims — what the chart actually shows vs. what was written
      🚫 Unrelated claims   — note these are not about the chart
+   Only include a section if it has at least one claim. Do not write "None" or
+   any placeholder for empty sections. Do not use horizontal rules (---) between sections.
 4. Ends with a 2-sentence overall summary.
 
 Tone: supportive, not punitive. Focus on helping the student improve.
-Omit any section that has no claims of that type.
 
 Output plain text feedback only (not JSON).
 """

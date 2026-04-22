@@ -227,7 +227,8 @@ async def run_full_pipeline(claim: str, img_path: str, model: str) -> str:
     os.environ["OPENROUTER_MODEL"]        = model
     os.environ["OPENROUTER_VISION_MODEL"] = model
     from chart_verifier.orchestrator import run_pipeline
-    return await run_pipeline(claim, img_path)
+    feedback_text, _ = await run_pipeline(claim, img_path)
+    return feedback_text
 
 
 # -- Output parsers ------------------------------------------------------------
