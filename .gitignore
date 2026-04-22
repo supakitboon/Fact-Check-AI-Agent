@@ -1,3 +1,7 @@
+# App directories
+frontend/
+backend/
+
 # Datasets & outputs
 data/
 output/
@@ -23,8 +27,9 @@ env/
 # Jupyter
 .ipynb_checkpoints/
 
-# ADK session artifacts
+# ADK session artifacts (any depth)
 .adk/
+**/.adk/
 
 # Archives
 *.zip
