@@ -1,11 +1,6 @@
 """
-Agent 4: Structured Evidence Agent
-Input:  atomic claim + chart image (to extract a pseudo-table from)
-Output: extracted data table, reasoned answer, confidence score
-
-Motivation from literature: structured intermediate representations improve
-interpretability and verifiability compared to direct visual QA alone.
-This agent first extracts a pseudo-table from the chart, then reasons over it.
+Agent 3 — Structured Evidence Agent
+Extracts a data table from the chart image and reasons over it to evaluate each claim.
 """
 
 from google.adk.agents import LlmAgent
@@ -29,6 +24,14 @@ Step 2 — Evaluate the claim against the table:
     correct   — the extracted data confirms the claim
     incorrect — the extracted data contradicts the claim
 
+"unrelated" is NOT a valid verdict. You MUST choose correct or incorrect.
+
+Confidence scoring rules:
+  0.9-1.0 — exact values read directly from the chart confirm or deny the claim with no ambiguity
+  0.6-0.8 — values estimated from scale are close enough to verify the claim with reasonable certainty
+  0.3-0.5 — values are difficult to read precisely; significant estimation was needed
+  0.0-0.2 — could not extract enough data from the chart to evaluate the claim reliably
+
 Output ONLY a JSON array (one object per claim, same order as input):
 [
   {
@@ -48,7 +51,7 @@ structured_evidence_agent = LlmAgent(
     model=make_llm(vision=True),
     description=(
         "Extracts a structured data table from the chart image and reasons over it "
-        "to evaluate all non-short-circuit claims."
+        "to evaluate each related claim."
     ),
     instruction=INSTRUCTION,
 )

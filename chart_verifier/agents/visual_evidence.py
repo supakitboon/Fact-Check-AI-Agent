@@ -1,10 +1,6 @@
 """
-Agent 3: Visual Evidence Agent
-Input:  atomic claim + base64-encoded chart image
-Output: evidence summary, candidate answer, confidence score
-
-Why LLM (vision): Only a multimodal model can read the chart image directly.
-This agent acts as a "sub-agent tool" that the Judge (Agent 6) calls.
+Agent 2 — Visual Evidence Agent
+Reads the chart image visually and evaluates each related claim.
 """
 
 import base64
@@ -20,6 +16,14 @@ You are a Chart Reader Agent. In the conversation history you will find:
 For each claim, examine the chart image visually and decide:
   correct   — the chart supports the claim
   incorrect — the chart does not support the claim
+
+"unrelated" is NOT a valid verdict. You MUST choose correct or incorrect.
+
+Confidence scoring rules:
+  0.9-1.0 — labels, bars, lines, or colors clearly and directly confirm or deny the claim
+  0.6-0.8 — claim is mostly verifiable visually but requires some estimation or interpretation
+  0.3-0.5 — chart is ambiguous, crowded, or hard to read for this specific claim
+  0.0-0.2 — chart does not contain enough visual information to evaluate this claim
 
 Output ONLY a JSON array (one object per claim, same order as input):
 [
@@ -38,8 +42,8 @@ visual_evidence_agent = LlmAgent(
     name="visual_evidence",
     model=make_llm(vision=True),
     description=(
-        "Reads the chart image and produces visual evidence, candidate verdict, "
-        "and confidence score for all non-short-circuit claims."
+        "Reads the chart image visually and produces a verdict and confidence "
+        "score for each related claim."
     ),
     instruction=INSTRUCTION,
 )

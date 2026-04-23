@@ -13,7 +13,9 @@ Architecture:
     │     └── Agent 3: structured_evidence
     │   ────────────────────────────────────────────────────────────────────
     │
-    └── Agent 4: verdict_feedback   (judge + feedback combined)
+    ├── Agent 4: verdict_arbiter    (Opus — resolve verdicts via avg confidence)
+    │
+    └── Agent 5: feedback_writer    (write student-facing feedback from verdicts)
 
 If input is a general message, only the Router runs.
 If ALL claims are short-circuit, evidence_gathering is skipped.
@@ -33,7 +35,8 @@ from chart_verifier.agents.general_chat import general_chat_agent
 from chart_verifier.agents.claim_analyzer import claim_analyzer_agent
 from chart_verifier.agents.visual_evidence import visual_evidence_agent
 from chart_verifier.agents.structured_evidence import structured_evidence_agent
-from chart_verifier.agents.verdict_feedback import verdict_feedback_agent
+from chart_verifier.agents.verdict_arbiter import verdict_arbiter_agent
+from chart_verifier.agents.feedback_writer import feedback_writer_agent
 
 
 # ── Agents 2 & 3 run in parallel ──────────────────────────────────────────────
@@ -50,7 +53,7 @@ class ConditionalPipelineAgent(BaseAgent):
     async def _run_async_impl(
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
-        general_chat, analyzer, evidence, feedback = self.sub_agents
+        general_chat, analyzer, evidence, arbiter, feedback = self.sub_agents
 
         # ── Step 0: route (pure Python — no LLM) ─────────────────────────
         if not _is_factcheck_request(ctx):
@@ -88,7 +91,15 @@ class ConditionalPipelineAgent(BaseAgent):
                 async for event in gen:
                     yield event
 
-        # ── Step 4: judge + feedback (always runs) ────────────────────────
+        # ── Step 4: Opus arbiter — only if any claim needs tiebreaking ────
+        # Compute avg confidence in Python; skip expensive Opus call when all
+        # claims already have |avg confidence| >= TIEBREAK_THRESHOLD.
+        if _needs_tiebreak(ctx):
+            async with aclosing(arbiter.run_async(ctx)) as gen:
+                async for event in gen:
+                    yield event
+
+        # ── Step 5: write student feedback ────────────────────────────────
         async with aclosing(feedback.run_async(ctx)) as gen:
             async for event in gen:
                 yield event
@@ -107,6 +118,78 @@ class ConditionalPipelineAgent(BaseAgent):
                 if claims is not None:
                     return all(c.get("short_circuit", False) for c in claims)
         return False
+
+
+TIEBREAK_THRESHOLD = 0.5
+
+
+def _needs_tiebreak(ctx: InvocationContext) -> bool:
+    """Return True if any claim has |avg confidence| < TIEBREAK_THRESHOLD.
+
+    Reads visual_evidence and structured_evidence outputs, computes the avg
+    confidence per claim, and escalates to Opus only when needed.
+    """
+    def _parse_evidence(author: str) -> dict[str, dict]:
+        for event in reversed(ctx.session.events):
+            if event.author != author:
+                continue
+            if not (event.content and event.content.parts):
+                continue
+            for part in event.content.parts:
+                text = getattr(part, "text", None)
+                if not text:
+                    continue
+                arr = _extract_json_array(text)
+                if arr:
+                    return {item["claim"]: item for item in arr if isinstance(item, dict) and item.get("claim")}
+        return {}
+
+    def _signed(verdict: str, confidence: float) -> float | None:
+        v = (verdict or "").lower().strip()
+        if v in ("correct", "supported"):
+            return +confidence
+        if v in ("incorrect", "contradicted"):
+            return -confidence
+        return None
+
+    def _direction(v: str) -> str:
+        if v in ("correct", "supported"):      return "supported"
+        if v in ("incorrect", "contradicted"): return "contradicted"
+        return "unknown"
+
+    vis  = _parse_evidence("visual_evidence")
+    strc = _parse_evidence("structured_evidence")
+
+    all_claims = set(vis) | set(strc)
+    if not all_claims:
+        return False  # no evidence yet — skip arbiter
+
+    for claim in all_claims:
+        v_item = vis.get(claim, {})
+        s_item = strc.get(claim, {})
+
+        v2 = (v_item.get("verdict", "") or "").lower().strip()
+        v3 = (s_item.get("verdict", "") or "").lower().strip()
+        c2 = float(v_item.get("confidence") or 0.0)
+        c3 = float(s_item.get("confidence") or 0.0)
+
+        # Condition 1: agents disagree on verdict direction
+        if v_item and s_item and _direction(v2) != _direction(v3) and _direction(v2) != "unknown" and _direction(v3) != "unknown":
+            return True
+
+        # Condition 2: avg confidence is too low
+        scores = []
+        for verdict, conf in ((v2, c2), (v3, c3)):
+            s = _signed(verdict, conf)
+            if s is not None:
+                scores.append(s)
+        if not scores:
+            return True  # can't compute — escalate to be safe
+        avg_conf = sum(scores) / len(scores)
+        if abs(avg_conf) < TIEBREAK_THRESHOLD:
+            return True
+
+    return False  # all claims are clear-cut
 
 
 def _is_factcheck_request(ctx: InvocationContext) -> bool:
@@ -147,23 +230,6 @@ def _split_claims(ctx: InvocationContext) -> tuple[list, list]:
     return [], []
 
 
-def _get_events_from(ctx: InvocationContext, author: str) -> list:
-    """Return parsed JSON array from the most recent event by the given author."""
-    for event in reversed(ctx.session.events):
-        if event.author != author:
-            continue
-        if not (event.content and event.content.parts):
-            continue
-        for part in event.content.parts:
-            text = getattr(part, "text", None)
-            if not text:
-                continue
-            data = _extract_json_array(text)
-            if data is not None:
-                return data
-    return []
-
-
 
 def _extract_json_array(text: str) -> list | None:
     start = text.find("[")
@@ -197,6 +263,7 @@ root_agent = ConditionalPipelineAgent(
         general_chat_agent,      # General conversation
         claim_analyzer_agent,    # Agent 1
         evidence_gathering,      # Agents 2 & 3 (parallel)
-        verdict_feedback_agent,  # Agent 4 (judge + feedback combined)
+        verdict_arbiter_agent,   # Agent 4 — verdict arbiter (Opus)
+        feedback_writer_agent,   # Agent 5 — feedback writer
     ],
 )

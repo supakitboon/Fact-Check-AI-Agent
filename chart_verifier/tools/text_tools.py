@@ -29,26 +29,6 @@ def split_sentences(text: str) -> dict:
     return {"sentences": sentences, "count": len(sentences)}
 
 
-def check_confidence_threshold(confidence: float, threshold: float = 0.7) -> dict:
-    """
-    Decide whether a claim needs re-checking based on confidence score.
-    Pure comparison — no LLM needed.
-
-    Args:
-        confidence: Float between 0 and 1 from a verifier agent.
-        threshold: Minimum confidence to skip re-check (default 0.7).
-
-    Returns:
-        dict with 'needs_recheck' (bool) and 'reason' (str).
-    """
-    needs_recheck = confidence < threshold
-    reason = (
-        f"Confidence {confidence:.2f} is below threshold {threshold:.2f} — flagged for re-check."
-        if needs_recheck
-        else f"Confidence {confidence:.2f} meets threshold {threshold:.2f} — no re-check needed."
-    )
-    return {"needs_recheck": needs_recheck, "reason": reason}
-
 
 def format_verdict_summary(verdicts: list[dict]) -> dict:
     """

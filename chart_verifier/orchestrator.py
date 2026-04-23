@@ -92,9 +92,11 @@ def _resolve_claim_verdicts(captured: dict[str, str]) -> list[dict]:
     verdict ∈ {supported, contradicted, unrelated}.
     Prefers the structured JSON output from verdict_feedback if available.
     """
-    # Try new JSON format from verdict_feedback first
-    vf_text = captured.get("verdict_feedback", "")
-    if vf_text:
+    # Prefer feedback_writer (has feedback text), fall back to verdict_arbiter (verdicts only)
+    for agent_key in ("feedback_writer", "verdict_arbiter", "verdict_feedback"):
+        vf_text = captured.get(agent_key, "")
+        if not vf_text:
+            continue
         data = _extract_json_object(vf_text)
         if data and "claims" in data:
             valid = {"supported", "contradicted", "unrelated"}
@@ -142,18 +144,30 @@ def _resolve_claim_verdicts(captured: dict[str, str]) -> list[dict]:
         vis  = vis_by_claim.get(claim)
         strc = strc_by_claim.get(claim)
 
-        vis_v    = _map(vis.get("verdict")  if vis  else "")
-        strc_v   = _map(strc.get("verdict") if strc else "")
-        vis_conf = float(vis.get("confidence")  or 0.0) if vis  else 0.0
-        strc_conf= float(strc.get("confidence") or 0.0) if strc else 0.0
-        avg_conf = (vis_conf + strc_conf) / 2.0
+        vis_v     = _map(vis.get("verdict")  if vis  else "")
+        strc_v    = _map(strc.get("verdict") if strc else "")
+        vis_conf  = float(vis.get("confidence")  or 0.0) if vis  else 0.0
+        strc_conf = float(strc.get("confidence") or 0.0) if strc else 0.0
 
-        if vis_v == strc_v and vis_v != "unknown" and avg_conf >= 0.70:
-            final = vis_v
-        elif strc_v != "unknown" and strc_conf >= vis_conf:
-            final = strc_v
-        elif vis_v != "unknown":
-            final = vis_v
+        # Confidence: supported → +conf, contradicted → −conf
+        def _signed(v, c):
+            if v == "supported":    return +c
+            if v == "contradicted": return -c
+            return None
+
+        scores = [s for s in [_signed(vis_v, vis_conf), _signed(strc_v, strc_conf)] if s is not None]
+        if scores:
+            avg_conf = sum(scores) / len(scores)
+            if abs(avg_conf) >= 0.5:
+                final = "supported" if avg_conf > 0 else "contradicted"
+            else:
+                # Below threshold — prefer structured for numerical, visual otherwise
+                if strc_v != "unknown":
+                    final = strc_v
+                elif vis_v != "unknown":
+                    final = vis_v
+                else:
+                    final = "unknown"
         else:
             final = "unknown"
 
@@ -237,9 +251,9 @@ async def run_pipeline(narrative: str, image_path: str) -> tuple[str, list[dict]
     last_text, captured = await asyncio.wait_for(_run(), timeout=AGENT_TIMEOUT)
     claim_verdicts = _resolve_claim_verdicts(captured)
 
-    # Extract summary from structured output if available
-    vf_data = _extract_json_object(captured.get("verdict_feedback", ""))
-    feedback_text = (vf_data or {}).get("summary", "") or last_text
+    # Extract summary — feedback_writer has it, verdict_arbiter does not
+    fw_data = _extract_json_object(captured.get("feedback_writer", ""))
+    feedback_text = (fw_data or {}).get("summary", "") or last_text
 
     print("\n" + "=" * 60)
     print("STUDENT FEEDBACK")
