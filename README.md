@@ -26,43 +26,7 @@ chart_verifier/
 ```
 
 ## Pipeline Flow
-
-```
-narrative + chart image
-        │
-        ▼
-[Router] image + text present?
-        │
-        ├─ No  → general_chat (conversational response)
-        │
-        └─ Yes ──────────────────────────────────────────────────────
-                │
-                ▼
-        [Agent 1] Claim Analyzer
-          • calls split_sentences tool on narrative
-          • classifies each sentence as related/unrelated to the chart
-          • unrelated sentences are short-circuited (verdict = unrelated)
-                │
-                ├─ all claims unrelated? → skip to Agent 5
-                │
-                ▼
-        [Agent 2] Visual Evidence  ──┐  (parallel)
-        [Agent 3] Structured Evidence┘
-          • Agent 2: reads chart image visually → verdict + confidence
-          • Agent 3: extracts pseudo-table from image → reasons over data → verdict + confidence
-                │
-                ▼
-        [Agent 4] Verdict Arbiter  (conditional — Opus)
-          • runs ONLY when agents disagree OR avg confidence < 0.5
-          • acts as senior arbiter to commit to a definitive verdict
-          • skipped when all claims already have clear-cut agreement
-                │
-                ▼
-        [Agent 5] Feedback Writer
-          • uses Agent 4 verdicts if available, else resolves from Agents 2 & 3 directly
-          • writes 1-2 sentence per-claim feedback
-          • writes 2-3 sentence overall student summary
-```
+![Pipeline Flow Diagram](diagram.png)
 
 ## Verdict Resolution
 
