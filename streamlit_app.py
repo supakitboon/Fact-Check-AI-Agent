@@ -188,31 +188,115 @@ def _word_similarity(a: str, b: str) -> float:
     return len(wa & wb) / len(wa | wb)
 
 
-_VERDICT_PRIORITY = {"contradicted": 0, "unrelated": 1, "supported": 2}
+_CAUSAL_RE = re.compile(
+    r'\b(because|since|so|as|therefore|thus|hence|consequently)\b',
+    re.IGNORECASE,
+)
+
+
+def _split_at_conjunction(sentence: str) -> list[str]:
+    raw = _CAUSAL_RE.split(sentence)
+    if len(raw) <= 1:
+        return [sentence]
+    fragments = []
+    if raw[0].strip():
+        fragments.append(raw[0].strip())
+    i = 1
+    while i + 1 <= len(raw) - 1:
+        conj, text = raw[i], raw[i + 1].strip()
+        if text:
+            fragments.append(f"{conj} {text}")
+        i += 2
+    return fragments or [sentence]
+
+
+def _make_span(text: str, verdict: str) -> str:
+    bg, border, color = _VERDICT_STYLE[verdict]
+    return (
+        f'<span style="background:{bg};border-bottom:2px solid {border};'
+        f'color:{color};padding:1px 3px;border-radius:3px;" '
+        f'title="{verdict}">{html.escape(text)}</span>'
+    )
+
+
+def _best_verdict(text: str, claim_verdicts: list[dict], threshold: float) -> str | None:
+    best_score, best_verdict = 0.0, None
+    for cv in claim_verdicts:
+        if cv["verdict"] not in _VERDICT_STYLE:
+            continue
+        score = _word_similarity(text, cv["claim"])
+        if score >= threshold and score > best_score:
+            best_score, best_verdict = score, cv["verdict"]
+    return best_verdict
 
 
 def highlight_narrative(narrative: str, claim_verdicts: list[dict]) -> str:
     sentences = re.split(r'(?<=[.!?])\s+', narrative.strip())
     parts = []
+
     for sentence in sentences:
-        matched = [
+        sentence_lower = sentence.lower()
+
+        # ── Primary: exact substring match on "original" field ────────────
+        exact_matches = [
+            cv for cv in claim_verdicts
+            if cv["verdict"] in _VERDICT_STYLE
+            and cv.get("original", "")
+            and cv["original"].lower() in sentence_lower
+        ]
+
+        if exact_matches:
+            if len(exact_matches) == 1 and exact_matches[0]["original"].lower() == sentence_lower:
+                # Original covers the whole sentence — highlight entirely
+                parts.append(_make_span(sentence, exact_matches[0]["verdict"]))
+            else:
+                # Multiple fragments or partial match — highlight each in place
+                result = sentence
+                for cv in sorted(exact_matches, key=lambda c: len(c["original"]), reverse=True):
+                    original = cv["original"]
+                    idx = result.lower().find(original.lower())
+                    if idx != -1:
+                        result = (
+                            result[:idx]
+                            + _make_span(result[idx:idx + len(original)], cv["verdict"])
+                            + result[idx + len(original):]
+                        )
+                parts.append(result)
+            continue
+
+        # ── Fallback: word similarity (when "original" field is absent) ───
+        sentence_matches = {
             cv["verdict"]
             for cv in claim_verdicts
             if cv["verdict"] in _VERDICT_STYLE and _word_similarity(sentence, cv["claim"]) >= 0.18
-        ]
+        }
 
-        escaped = html.escape(sentence)
-        if matched:
-            verdict = min(matched, key=lambda v: _VERDICT_PRIORITY.get(v, 99))
-            bg, border, color = _VERDICT_STYLE[verdict]
-            parts.append(
-                f'<span style="background:{bg};border-bottom:2px solid {border};'
-                f'color:{color};padding:1px 3px;border-radius:3px;" '
-                f'title="{verdict}">{escaped}</span>'
-            )
+        if len(sentence_matches) == 1:
+            parts.append(_make_span(sentence, sentence_matches.pop()))
+            continue
+
+        fragments = _split_at_conjunction(sentence)
+        if len(fragments) > 1:
+            highlighted = []
+            any_matched = False
+            for fragment in fragments:
+                verdict = _best_verdict(fragment, claim_verdicts, threshold=0.10)
+                if verdict:
+                    highlighted.append(_make_span(fragment, verdict))
+                    any_matched = True
+                else:
+                    highlighted.append(html.escape(fragment))
+            if any_matched:
+                parts.append(" ".join(highlighted))
+                continue
+
+        if sentence_matches:
+            verdict = _best_verdict(sentence, claim_verdicts, threshold=0.18)
+            parts.append(_make_span(sentence, verdict) if verdict else html.escape(sentence))
         else:
-            parts.append(escaped)
-    return ' '.join(parts)
+            parts.append(html.escape(sentence))
+
+    return " ".join(parts)
 
 
 def md_to_html(text: str) -> str:

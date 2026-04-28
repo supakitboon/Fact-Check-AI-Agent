@@ -251,6 +251,18 @@ async def run_pipeline(narrative: str, image_path: str) -> tuple[str, list[dict]
     last_text, captured = await asyncio.wait_for(_run(), timeout=AGENT_TIMEOUT)
     claim_verdicts = _resolve_claim_verdicts(captured)
 
+    # Attach original narrative fragments from Agent 1 so the UI can do
+    # exact substring highlighting instead of fuzzy word similarity.
+    agent1_arr = _extract_json_array(captured.get("claim_analyzer", "")) or []
+    original_map = {
+        item["claim"]: item.get("original", "")
+        for item in agent1_arr
+        if isinstance(item, dict) and item.get("claim")
+    }
+    for cv in claim_verdicts:
+        if not cv.get("original"):
+            cv["original"] = original_map.get(cv["claim"], "")
+
     # Extract summary — feedback_writer has it, verdict_arbiter does not
     fw_data = _extract_json_object(captured.get("feedback_writer", ""))
     feedback_text = (fw_data or {}).get("summary", "") or last_text

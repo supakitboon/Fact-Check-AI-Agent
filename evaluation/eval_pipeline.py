@@ -30,13 +30,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 from litellm import completion
 
-load_dotenv(Path(__file__).parent / "chart_verifier" / ".env")
+load_dotenv(Path(__file__).parent.parent / "chart_verifier" / ".env")
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
 MODEL       = os.getenv("OPENROUTER_VISION_MODEL", "openrouter/anthropic/claude-sonnet-4-6")
 OPUS_MODEL  = os.getenv("OPENROUTER_OPUS_MODEL",   "openrouter/anthropic/claude-opus-4-7")
-IMAGE_CACHE = Path(__file__).parent / "eval_image_cache"
+IMAGE_CACHE = Path(__file__).parent.parent / "eval_image_cache"
 IMAGE_CACHE.mkdir(exist_ok=True)
 RATE_DELAY = 2.0  # seconds between API calls
 
@@ -542,7 +542,7 @@ def load_csv(path: str, n: int) -> list[dict]:
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main(n: int, output: str, systems: list[str]) -> None:
-    csv_path = Path(__file__).parent / "data" / "chartcheck" / "test.csv"
+    csv_path = Path(__file__).parent.parent / "data" / "chartcheck" / "test.csv"
     rows = load_csv(str(csv_path), n)
 
     # Each system expands to display columns: (entry_key_prefix, header_label)

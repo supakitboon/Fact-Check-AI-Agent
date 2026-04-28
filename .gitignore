@@ -43,3 +43,5 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+eval_image_cache/

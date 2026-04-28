@@ -91,13 +91,24 @@ class ConditionalPipelineAgent(BaseAgent):
                 async for event in gen:
                     yield event
 
-        # ── Step 4: Opus arbiter — only if any claim needs tiebreaking ────
-        # Compute avg confidence in Python; skip expensive Opus call when all
-        # claims already have |avg confidence| >= TIEBREAK_THRESHOLD.
+        # ── Step 4: resolve related-claim verdicts ────────────────────────
+        # If Agents 2 & 3 disagree or have low confidence → escalate to Opus.
+        # Otherwise → resolve in Python and emit as verdict_resolved so the
+        # feedback_writer never has to compute anything itself.
         if _needs_tiebreak(ctx):
             async with aclosing(arbiter.run_async(ctx)) as gen:
                 async for event in gen:
                     yield event
+        else:
+            resolved = _resolve_from_evidence(ctx)
+            if resolved:
+                yield Event(
+                    author="verdict_resolved",
+                    content=types.Content(
+                        role="model",
+                        parts=[types.Part(text=json.dumps({"claims": resolved}, indent=2))],
+                    ),
+                )
 
         # ── Step 5: write student feedback ────────────────────────────────
         async with aclosing(feedback.run_async(ctx)) as gen:
@@ -190,6 +201,55 @@ def _needs_tiebreak(ctx: InvocationContext) -> bool:
             return True
 
     return False  # all claims are clear-cut
+
+
+def _resolve_from_evidence(ctx: InvocationContext) -> list[dict]:
+    """Compute supported/contradicted verdicts from Agents 2 & 3 avg confidence.
+
+    Called only when _needs_tiebreak() returned False, meaning all claims are
+    clear-cut. Emitted as verdict_resolved so feedback_writer reads, not computes.
+    """
+    def _parse_evidence(author: str) -> dict[str, dict]:
+        for event in reversed(ctx.session.events):
+            if event.author != author:
+                continue
+            if not (event.content and event.content.parts):
+                continue
+            for part in event.content.parts:
+                text = getattr(part, "text", None)
+                if not text:
+                    continue
+                arr = _extract_json_array(text)
+                if arr:
+                    return {item["claim"]: item for item in arr if isinstance(item, dict) and item.get("claim")}
+        return {}
+
+    def _signed(verdict: str, confidence: float) -> float | None:
+        v = (verdict or "").lower().strip()
+        if v in ("correct", "supported"):
+            return +confidence
+        if v in ("incorrect", "contradicted"):
+            return -confidence
+        return None
+
+    vis  = _parse_evidence("visual_evidence")
+    strc = _parse_evidence("structured_evidence")
+
+    resolved = []
+    for claim in set(vis) | set(strc):
+        v_item = vis.get(claim, {})
+        s_item = strc.get(claim, {})
+        scores = []
+        for item in (v_item, s_item):
+            s = _signed(item.get("verdict", ""), float(item.get("confidence") or 0.0))
+            if s is not None:
+                scores.append(s)
+        avg = sum(scores) / len(scores) if scores else 0.0
+        resolved.append({
+            "claim":   claim,
+            "verdict": "supported" if avg > 0 else "contradicted",
+        })
+    return resolved
 
 
 def _is_factcheck_request(ctx: InvocationContext) -> bool:
