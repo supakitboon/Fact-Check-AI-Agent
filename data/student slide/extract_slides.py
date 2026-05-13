@@ -43,24 +43,29 @@ OUTPUT_DIR = SLIDE_DIR / "extracted"
 CSV_PATH   = SLIDE_DIR / "extracted_slides.csv"
 
 FULL_SLIDE_THRESHOLD = 0.90
+MIN_IMAGE_THRESHOLD  = 0.03   # skip images whose area < 3 % of slide area (logos, icons)
 DEFAULT_MODEL        = "anthropic/claude-sonnet-4.6"
 
 AI_PROMPT = """You are analyzing a presentation slide image.
 
-Extract two things:
-
-1. plot_bbox: The bounding box of the chart or plot in the image, as percentages (0.0–1.0) of image width/height.
-   Format: {"x1": left, "y1": top, "x2": right, "y2": bottom}
-   If no chart is visible, set to null.
-
-2. explanation: All explanatory or descriptive text written on the slide (titles, labels, bullet points, captions).
-   If no text is present, set to null.
+First decide: does this slide contain a data visualization (chart, graph, plot, table of data)?
+- YES if you can see: bar chart, line chart, scatter plot, pie chart, histogram, heatmap, box plot, data table, etc.
+- NO if the slide is only text, a photo, a logo, a title card, a storyboard, or any non-data image.
 
 Return ONLY a JSON object, no markdown:
+
+If the slide does NOT contain a chart/plot:
+{"has_chart": false, "plot_bbox": null, "explanation": null}
+
+If the slide DOES contain a chart/plot:
 {
-  "plot_bbox": {"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0},
-  "explanation": "<all text from the slide>"
-}"""
+  "has_chart": true,
+  "plot_bbox": {"x1": <left>, "y1": <top>, "x2": <right>, "y2": <bottom>},
+  "explanation": "<all text on the slide: titles, axis labels, captions, bullet points>"
+}
+
+plot_bbox must be a tight box around ONLY the chart area (axes + data), expressed as fractions (0.0–1.0) of image width/height.
+Do NOT return a box that covers more than 85% of the image."""
 
 
 # ── OpenRouter client ──────────────────────────────────────────────────────────
@@ -99,19 +104,24 @@ def encode_image(path: Path) -> str:
     return base64.b64encode(path.read_bytes()).decode()
 
 
+MIN_TEXT_LENGTH = 30  # characters — shorter strings are treated as titles/labels
+
 def extract_text(slide) -> str:
     shapes = sorted(slide.shapes, key=lambda s: (s.top or 0, s.left or 0))
-    lines = [
-        shape.text_frame.text.strip()
-        for shape in shapes
-        if shape.has_text_frame and shape.text_frame.text.strip()
-    ]
+    lines = []
+    for shape in shapes:
+        if shape.has_text_frame:
+            text = " ".join(shape.text_frame.text.split())
+            if len(text) >= MIN_TEXT_LENGTH:
+                lines.append(text)
     return " | ".join(lines)
 
 
-def image_type(shape, slide_w, slide_h) -> str:
+def image_type(shape, slide_w, slide_h) -> str | None:
     w_ratio = shape.width  / slide_w
     h_ratio = shape.height / slide_h
+    if w_ratio * h_ratio < MIN_IMAGE_THRESHOLD:
+        return None  # too small — likely a logo or icon
     return "full_slide" if (w_ratio >= FULL_SLIDE_THRESHOLD and
                             h_ratio >= FULL_SLIDE_THRESHOLD) else "chart"
 
@@ -150,15 +160,23 @@ def ai_extract(img_path: Path, client: OpenAI, model: str) -> dict:
         raw = resp.choices[0].message.content or ""
         obj = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
 
-        bbox        = obj.get("plot_bbox")
-        chart_path  = crop_chart(img_path, bbox) if bbox else None
+        if not obj.get("has_chart", True):
+            return {"has_chart": False, "ai_chart_path": None, "ai_explanation": None}
+
+        bbox = obj.get("plot_bbox")
+        if bbox:
+            bbox_area = (bbox["x2"] - bbox["x1"]) * (bbox["y2"] - bbox["y1"])
+            if bbox_area > 0.85:
+                bbox = None
+        chart_path = crop_chart(img_path, bbox) if bbox else None
 
         return {
+            "has_chart": True,
             "ai_chart_path": relative_path(chart_path) if chart_path else None,
             "ai_explanation": obj.get("explanation"),
         }
     except Exception as e:
-        return {"ai_chart_path": None, "ai_explanation": f"[error: {e}]"}
+        return {"has_chart": True, "ai_chart_path": None, "ai_explanation": f"[error: {e}]"}
 
 
 # ── Core extraction ────────────────────────────────────────────────────────────
@@ -167,12 +185,15 @@ def extract_images(slide, slide_w, slide_h, out_dir: Path, prefix: str) -> list[
     results = []
 
     def process(shape, label):
+        itype = image_type(shape, slide_w, slide_h)
+        if itype is None:
+            return
         ext   = (shape.image.ext or "png").lower().lstrip(".")
         dest  = out_dir / f"{prefix}_{label}.{ext}"
         saved = save_as_png(shape.image.blob, ext, dest)
         results.append({
-            "img_path": relative_path(saved),
-            "img_type": image_type(shape, slide_w, slide_h),
+            "img_path":  relative_path(saved),
+            "img_type":  itype,
             "_abs_path": saved,
         })
 
@@ -201,18 +222,31 @@ def process_pptx(pptx_path: Path, out_dir: Path,
 
         if images:
             for img in images:
-                ai = {}
                 if img["img_type"] == "full_slide":
                     print(f"    AI extracting slide {num} ...")
                     ai = ai_extract(img["_abs_path"], client, model)
 
-                img_path    = ai.get("ai_chart_path") or img["img_path"]
-                explanation = ai.get("ai_explanation") or text
+                    if not ai.get("has_chart", True):
+                        print(f"      → no chart, skipping")
+                        img["_abs_path"].unlink(missing_ok=True)
+                        continue
+
+                    if not ai.get("ai_chart_path"):
+                        img["_abs_path"].unlink(missing_ok=True)
+                        continue
+
+                    img["_abs_path"].unlink(missing_ok=True)
+                    img_path    = ai["ai_chart_path"]
+                    explanation = ai.get("ai_explanation") or text
+                else:
+                    img_path    = img["img_path"]
+                    explanation = text
+
                 rows.append({
                     "pptx_file":   pptx_path.name,
                     "slide_num":   num,
                     "img_path":    img_path,
-                    "img_type":    img["img_type"],
+                    "img_type":    "chart",
                     "explanation": explanation,
                 })
         # slides with no image are skipped
@@ -228,7 +262,7 @@ def main(out_dir: Path, csv_path: Path, model: str) -> None:
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
 
-    pptx_files = sorted(SLIDE_DIR.glob("*.pptx"))
+    pptx_files = sorted(p for p in SLIDE_DIR.glob("*.pptx") if not p.name.startswith("~$"))
     if not pptx_files:
         print("No .pptx files found in", SLIDE_DIR)
         return

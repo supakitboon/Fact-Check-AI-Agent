@@ -7,48 +7,92 @@ Fact-checks student chart narratives against chart images using Google ADK + Ope
 ```
 chart_verifier/
 ├── agent.py              # ADK root agent (ConditionalPipelineAgent — entry for adk web / adk run)
-├── orchestrator.py       # Programmatic CLI runner with step-by-step logging
+├── orchestrator.py       # Programmatic runner — resolves verdicts and attaches original fragments
 ├── config.py             # Model config (OpenRouter via LiteLlm)
 ├── requirements.txt
 ├── .env                  # OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_VISION_MODEL, OPENROUTER_OPUS_MODEL
 │
 ├── agents/
 │   ├── general_chat.py         # General conversation handler (non-factcheck path)
-│   ├── claim_analyzer.py       # Agent 1: sentence splitting + relevance classification (vision LLM)
+│   ├── claim_analyzer.py       # Agent 1: sentence splitting + atomic decomposition + relevance classification (vision LLM)
 │   ├── visual_evidence.py      # Agent 2: chart image reading → verdict + confidence (vision LLM)
 │   ├── structured_evidence.py  # Agent 3: pseudo-table extraction → verdict + confidence (vision LLM)
-│   ├── verdict_arbiter.py      # Agent 4: tiebreaker — resolves conflicting/low-confidence verdicts (Opus)
+│   ├── verdict_arbiter.py      # Agent 4: resolves conflicting/low-confidence verdicts (Opus)
 │   └── feedback_writer.py      # Agent 5: writes per-claim feedback + overall summary (LLM)
 │
 └── tools/
-    └── text_tools.py     # Deterministic tools: split_sentences, check_confidence_threshold,
-                          # format_verdict_summary
+    └── text_tools.py     # Utility: format_verdict_summary
+
+evaluation/
+├── eval_pipeline.py      # Ablation study across visual-only / structured-only / pipeline systems
+└── eval_agent1.py        # Model ablation for Agent 1 across different vision LLMs
+
+streamlit_app.py          # Streamlit UI — narrative highlighting + feedback display
 ```
 
 ## Pipeline Flow
-![Pipeline Flow Diagram](diagram.png)
+
+```
+narrative + chart image
+        │
+        ▼
+[Router] image + text present?
+        │
+        ├─ No  → general_chat (conversational response)
+        │
+        └─ Yes ─────────────────────────────────────────────────────────
+                │
+                ▼
+        [Agent 1] Claim Analyzer  (vision LLM — single pass, no tools)
+          • splits narrative into sentences
+          • decomposes each sentence into atomic, independently verifiable sub-claims
+            (e.g. "X rose because Y" → sub-claim 1: "X rose", sub-claim 2: "Y caused X to rise")
+          • classifies each sub-claim as related or unrelated to the chart
+          • stores "original" fragment for UI highlighting
+          • unrelated sub-claims are short-circuited (verdict = unrelated, sent directly to Agent 5)
+                │
+                ├─ all claims unrelated? → skip to Agent 5
+                │
+                ▼
+        [Agent 2] Visual Evidence  ──┐  (parallel)
+        [Agent 3] Structured Evidence┘
+          • Agent 2: reads chart image visually → verdict + confidence
+          • Agent 3: extracts pseudo-table from image → verdict + confidence
+                │
+                ▼
+        [Agent 4] Verdict Arbiter  (conditional — Opus)
+          • runs ONLY when agents disagree OR avg confidence < 0.5
+          • commits to a definitive supported / contradicted verdict
+          • when skipped: Python resolves verdict from avg confidence
+            and emits a verdict_resolved event for Agent 5 to read
+                │
+                ▼
+        [Agent 5] Feedback Writer
+          • reads unrelated sub-claims directly from unrelated_claims event (Agent 1 path)
+          • reads related-claim verdicts from verdict_arbiter OR verdict_resolved (never recomputes)
+          • writes 1-2 sentence per-claim feedback
+          • writes 2-3 sentence overall student summary
+```
 
 ## Verdict Resolution
 
 | Condition | Resolution |
 |---|---|
-| Both agents agree **and** \|avg confidence\| ≥ 0.5 | Skip Agent 4 — use avg confidence verdict directly |
-| Agents disagree **or** \|avg confidence\| < 0.5 | Escalate to Agent 4 (Verdict Arbiter — Opus) |
-| Claim was short-circuited (unrelated) | verdict = unrelated, skip evidence gathering |
+| Agents 2 & 3 agree **and** \|avg confidence\| ≥ 0.5 | Python resolves → emits `verdict_resolved` — Agent 4 skipped |
+| Agents 2 & 3 disagree **or** \|avg confidence\| < 0.5 | Escalate to Agent 4 (Verdict Arbiter — Opus) |
+| Sub-claim was short-circuited (unrelated) | verdict = unrelated, bypasses Agents 2, 3, and 4 entirely |
 
-## LLM vs. Deterministic
+## Components
 
 | Component | Type | Model |
 |---|---|---|
-| `split_sentences` | Tool (regex) | — |
-| `check_confidence_threshold` | Tool (comparison) | — |
-| `format_verdict_summary` | Tool (counter) | — |
 | Agent 1 (Claim Analyzer) | Vision LLM | `OPENROUTER_VISION_MODEL` |
 | Agent 2 (Visual Evidence) | Vision LLM | `OPENROUTER_VISION_MODEL` |
 | Agent 3 (Structured Evidence) | Vision LLM | `OPENROUTER_VISION_MODEL` |
 | Agent 4 (Verdict Arbiter) | LLM (Opus) | `OPENROUTER_OPUS_MODEL` |
 | Agent 5 (Feedback Writer) | LLM | `OPENROUTER_MODEL` |
 | General Chat | LLM | `OPENROUTER_MODEL` |
+| Verdict resolution (Agent 4 skipped) | Python (deterministic) | — |
 
 ## Setup
 
@@ -68,6 +112,19 @@ streamlit run streamlit_app.py  # from project root
 
 # 3c. Run programmatically
 python -m chart_verifier.orchestrator "Your narrative here." path/to/chart.png
+```
+
+## Evaluation
+
+```bash
+# Ablation study across visual-only / structured-only / pipeline systems
+python evaluation/eval_pipeline.py --n 20 --output eval_results.csv
+
+# Agent 1 model ablation — compare vision LLMs on sentence splitting + relevance classification
+python evaluation/eval_agent1.py --n 20 --output eval_agent1_results.csv
+
+# Custom model list for Agent 1 ablation
+python evaluation/eval_agent1.py --n 10 --models "openrouter/anthropic/claude-sonnet-4-6,openrouter/openai/gpt-4o"
 ```
 
 ## Choosing a Model
