@@ -4,7 +4,7 @@ For full-slide images (Google Slides flattened export), an AI vision model
 is used via OpenRouter to extract the chart description and explanation.
 
 Output:
-  extracted/<pptx_name>/slide001.png, slide002.png, ...
+  extracted_image/<pptx_name>/slide001.png, slide002.png, ...
   extracted_slides.csv  (columns: pptx_file, slide_num, img_path, img_type,
                                    explanation, ai_chart, ai_explanation)
 
@@ -34,12 +34,12 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from PIL import Image
 import os
 
-load_dotenv(Path(__file__).parent.parent.parent / "chart_verifier" / ".env")
+load_dotenv(Path(__file__).parent / ".env")
 
 # ── Paths & config ─────────────────────────────────────────────────────────────
 
 SLIDE_DIR  = Path(__file__).parent
-OUTPUT_DIR = SLIDE_DIR / "extracted"
+OUTPUT_DIR = SLIDE_DIR / "extracted_image"
 CSV_PATH   = SLIDE_DIR / "extracted_slides.csv"
 
 FULL_SLIDE_THRESHOLD = 0.90
@@ -212,7 +212,9 @@ def process_pptx(pptx_path: Path, out_dir: Path,
                  client: OpenAI, model: str) -> list[dict]:
     prs       = Presentation(str(pptx_path))
     slide_out = out_dir / safe_stem(pptx_path.stem)
-    slide_out.mkdir(parents=True, exist_ok=True)
+    if slide_out.exists():
+        shutil.rmtree(slide_out)
+    slide_out.mkdir(parents=True)
 
     rows = []
     for num, slide in enumerate(prs.slides, 1):
@@ -258,9 +260,7 @@ def process_pptx(pptx_path: Path, out_dir: Path,
 
 def main(out_dir: Path, csv_path: Path, model: str) -> None:
     client = make_client()
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     pptx_files = sorted(p for p in SLIDE_DIR.glob("*.pptx") if not p.name.startswith("~$"))
     if not pptx_files:
