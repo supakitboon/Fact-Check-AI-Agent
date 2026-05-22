@@ -190,8 +190,7 @@ def extract_images(slide, slide_w, slide_h, out_dir: Path, slide_num: int) -> li
         if itype is None:
             return
         ext   = (shape.image.ext or "png").lower().lstrip(".")
-        img_suffix = f"_image_{counter[0]}" if counter[0] > 1 else ""
-        dest  = out_dir / f"slide_{slide_num}{img_suffix}.{ext}"
+        dest  = out_dir / f"slide_{slide_num:03d}_image_{counter[0]:02d}.{ext}"
         saved = save_as_png(shape.image.blob, ext, dest)
         counter[0] += 1
         results.append({
