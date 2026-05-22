@@ -181,29 +181,32 @@ def ai_extract(img_path: Path, client: OpenAI, model: str) -> dict:
 
 # ── Core extraction ────────────────────────────────────────────────────────────
 
-def extract_images(slide, slide_w, slide_h, out_dir: Path, prefix: str) -> list[dict]:
+def extract_images(slide, slide_w, slide_h, out_dir: Path, slide_num: int) -> list[dict]:
     results = []
+    counter = [1]
 
-    def process(shape, label):
+    def process(shape):
         itype = image_type(shape, slide_w, slide_h)
         if itype is None:
             return
         ext   = (shape.image.ext or "png").lower().lstrip(".")
-        dest  = out_dir / f"{prefix}_{label}.{ext}"
+        img_suffix = f"_image_{counter[0]}" if counter[0] > 1 else ""
+        dest  = out_dir / f"slide_{slide_num}{img_suffix}.{ext}"
         saved = save_as_png(shape.image.blob, ext, dest)
+        counter[0] += 1
         results.append({
             "img_path":  relative_path(saved),
             "img_type":  itype,
             "_abs_path": saved,
         })
 
-    for idx, shape in enumerate(slide.shapes):
+    for shape in slide.shapes:
         if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-            process(shape, f"img{idx:02d}")
+            process(shape)
         elif shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-            for cidx, child in enumerate(shape.shapes):
+            for child in shape.shapes:
                 if child.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                    process(child, f"img{idx:02d}_{cidx:02d}")
+                    process(child)
 
     return results
 
@@ -218,8 +221,7 @@ def process_pptx(pptx_path: Path, out_dir: Path,
 
     rows = []
     for num, slide in enumerate(prs.slides, 1):
-        prefix = f"slide{num:03d}"
-        images = extract_images(slide, prs.slide_width, prs.slide_height, slide_out, prefix)
+        images = extract_images(slide, prs.slide_width, prs.slide_height, slide_out, num)
         text   = extract_text(slide)
 
         if images:
